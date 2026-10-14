@@ -1,68 +1,76 @@
-# RabbitMQ Delayed Message Plugin
+# RabbitMQ Delayed Message Plugin for RabbitMQ 4.3
 
-## This Project is No Longer Maintained
+A maintained fork of [rabbitmq/rabbitmq-delayed-message-exchange](https://github.com/rabbitmq/rabbitmq-delayed-message-exchange),
+which Team RabbitMQ archived in 2026 after RabbitMQ 4.3 removed Mnesia from the broker.
+The upstream 4.2.0 build fails to boot on 4.3 with `undef rabbit_mnesia:start_mnesia/1`.
 
-**Important**: Team RabbitMQ no longer maintains this project.
+This fork keeps the plugin working on **RabbitMQ 4.3.x** for people who still depend on
+`x-delayed-message` exchanges while they move to something else. It changes as little as possible:
 
-## Why?
+* The plugin starts OTP's own `mnesia` application as a node-local store instead of calling the
+  `rabbit_mnesia` and `rabbit_table` modules that 4.3 removed.
+* RabbitMQ 4.3 still points the `mnesia` directory at the node data directory, so delayed messages
+  written by the upstream 4.2.0 plugin are delivered after the node is upgraded. The smoke test
+  checks exactly that.
+* The build moved to the RabbitMQ monorepo layout, in Docker, so it is reproducible.
 
-This plugin has serious limitations and is based on Mnesia, the original schema data store in RabbitMQ that
-[was completely removed from RabbitMQ](https://github.com/rabbitmq/rabbitmq-server/pull/15542) in the `4.3.0` development cycle.
+The [limitations](#consider-the--limitations) of the original design still apply: delayed messages
+live on one node, are not replicated, and are not meant for large volumes or long delays.
 
-A [distributed design](https://github.com/rabbitmq/rabbitmq-delayed-message-exchange/issues/229) of this plugin
-required significant changes (e.g. switching from a custom exchange type to a custom queue type),
-and took a few person-years worth of R&D investment. 
+If you can, prefer the alternatives below. If you cannot yet, this fork buys you the time.
 
-Starting with RabbitMQ `4.4`, [quorum queues](https://www.rabbitmq.com/docs/quorum-queues) natively support
-message delivery delay.
+## Alternatives
 
+* **Quorum queue delayed retry** (RabbitMQ 4.3+): `x-delayed-retry-type`, `x-delayed-retry-min` and
+  `x-delayed-retry-max` delay redelivery of returned messages. Over AMQP 0-9-1 a `basic.nack` with
+  `requeue=true` is delayed by `x-delayed-retry-min` every time, because 0-9-1 returns do not raise
+  `delivery-count`. It covers retries with a fixed pause, not delays chosen by the publisher.
+* **[Dead lettering](https://www.rabbitmq.com/docs/dlx) with [TTL](https://www.rabbitmq.com/docs/ttl)**,
+  one queue per delay, for a small set of fixed delays.
+* **An external scheduler** with its own data store, for long or many delays.
 
-## Alternatives Available
+## Supported Versions
 
-### Message Delivery Delay in Quorum Queues
+| This fork | RabbitMQ | Erlang/OTP |
+|-----------|----------|------------|
+| 4.3.x     | 4.3.x    | 27, 28     |
 
-Starting with RabbitMQ `4.4`, [quorum queues](https://www.rabbitmq.com/docs/quorum-queues) support message delivery delay.
-Unlike this plugin, quorum queues offer:
+Release builds are compiled on OTP 27. Modules compiled on OTP 27 load on OTP 27 and 28, but not
+the other way round: the official `rabbitmq:4.3` Docker image runs OTP 27, CloudAMQP runs OTP 28.
 
- * Raft-based replication and data safety
- * No dependency on Mnesia
+## Build and Test
 
-### Using Dead Lettering for Message Delays
+Requires Docker.
 
-The combination of [Dead Lettering](https://www.rabbitmq.com/docs/dlx) and [TTL](https://www.rabbitmq.com/docs/ttl) has been widely used for
-basic delays and task retries across the RabbitMQ community.
+```bash
+scripts/build.sh             # builds against RabbitMQ v4.3.6 into dist/
+scripts/build.sh v4.3.5      # another 4.3.x tag
+scripts/smoke-test.sh        # runs the built plugin on real nodes
+```
 
-Some messaging frameworks, e.g. NServiceBus, set up the topology for such delayed retries for you.
+`scripts/smoke-test.sh` checks that:
 
-This option gives you much better visibility of what's going on with the delayed messages, an ability to purge
-the messages, and use replicated queues types for their storage.
+1. a message published with `x-delay` is delivered after the delay, not before,
+2. a delayed message survives a node restart,
+3. a message delayed by RabbitMQ 4.2.x with the upstream 4.2.0 plugin is delivered after the node
+   is upgraded to 4.3.x with this build.
 
-### Build Your Own Single Node Alternative
+## Installation
 
-If the serious limitations of this plugin are acceptable to you, the single-node nature and significant limitations of this plugin
-make it easier to reimplement without any use of Mnesia:
+Download the `.ez` file from the [releases](https://github.com/dominikzabcik/rabbitmq-delayed-message-exchange/releases)
+of this fork, copy it into the node's [plugins directory](https://www.rabbitmq.com/docs/plugins#plugin-directories)
+(`rabbitmq-plugins directories -s`), and enable it:
 
- * Target RabbitMQ 4.x where Khepri is a stable feature, enabled by default as of `4.2.0`
- * Use Khepri for metadata storage
- * Use RocksDB for storing messages
+```bash
+rabbitmq-plugins enable rabbitmq_delayed_message_exchange
+```
 
-
-
-## Consider the  Limitations
-
-This plugin adds delayed-messaging (or scheduled-messaging) to
-RabbitMQ. Its current design **has multiple significant limitation** (documented below),
-consider using an external scheduler and a data store that fits your needs
-first.
-
-This plugin badly needs a [new design](https://github.com/rabbitmq/rabbitmq-delayed-message-exchange/issues/229)
-and a reimplementation from the ground up.
-
-If you accept the limitations, please read on.
+Upgrading from the upstream 4.2.0 plugin: enable all stable feature flags on 4.2, stop the node,
+replace the plugin file, start 4.3. Delayed messages are kept.
 
 ## The Basics
 
-With this plugin [enabled](https://www.rabbitmq.com/docs/plugins), a user can declare an exchange with the type `x-delayed-message` and
+With this plugin enabled, a user can declare an exchange with the type `x-delayed-message` and
 then publish messages with the custom header `x-delay` expressing in
 milliseconds a delay time for the message. The message will be
 delivered to the respective queues after `x-delay` milliseconds.
@@ -77,49 +85,17 @@ consider using a data store suitable for long-term storage, and an external sche
 of some kind.
 
 
-## Supported RabbitMQ Versions
+## Consider the  Limitations
 
-Every [release](https://github.com/rabbitmq/rabbitmq-delayed-message-exchange) of this plugin targest one RabbitMQ release series.
+This plugin adds delayed-messaging (or scheduled-messaging) to
+RabbitMQ. Its current design **has multiple significant limitation** (documented below),
+consider using an external scheduler and a data store that fits your needs
+first.
 
-This plugin can be enabled on a RabbitMQ cluster that uses either Mnesia or Khepri as [metadata store](https://www.rabbitmq.com/docs/metadata-store),
-however, when this plugin is enabled **before** Khepri, it must be restarted (or the node must be)
-after Khepri is enabled.
+This plugin badly needs a [new design](https://github.com/rabbitmq/rabbitmq-delayed-message-exchange/issues/229)
+and a reimplementation from the ground up.
 
-In other words, there are three possible scenarios w.r.t. the schema data store used:
-
-1. If the cluster uses Mnesia for schema store, it works exactly as it did against RabbitMQ 3.13.x
-2. If the cluster uses Khepri and the plugin is enabled after Khepri, it will start Mnesia, set up a node-local Mnesia replica and schema, and works as in scenario 1
-3. **Important**: if the cluster uses Mnesia, then the plugin is enabled, and then Khepri is enabled, the plugin must be disabled and re-enabled, or the node must be restarted.
-   Then it will start Mnesia and works as in scenario 2
-
-## Supported Erlang/OTP Versions
-
-The latest version of this plugin [requires Erlang 26.2 or later versions](https://www.rabbitmq.com/docs/which-erlang).
-
-
-
-## Installation
-
-### Download a Binary Build
-
-Binary builds are distributed [via GitHub releases](https://github.com/rabbitmq/rabbitmq-delayed-message-exchange/releases).
-
-As with all 3rd party plugins, the `.ez` file must be copied into a [node's plugins directory](https://rabbitmq.com/plugins.html#plugin-directories)
-with sufficient permissions for the effective user of the RabbitMQ process to load it from disk.
-
-To find out what the plugins directory is, use `rabbitmq-plugins directories`
-
-``` bash
-rabbitmq-plugins directories -s
-```
-
-### Enabling the Plugin
-
-Then run the following command:
-
-``` bash
-rabbitmq-plugins enable rabbitmq_delayed_message_exchange
-```
+If you accept the limitations, please read on.
 
 ## Usage ##
 
@@ -230,24 +206,6 @@ See [#72](https://github.com/rabbitmq/rabbitmq-delayed-message-exchange/issues/7
 You can disable this plugin by calling `rabbitmq-plugins disable
 rabbitmq_delayed_message_exchange` but note that **ALL DELAYED MESSAGES THAT
 HAVEN'T BEEN DELIVERED WILL BE LOST**.
-
-## Building the Plugin
-
-```shell
-PROJECT_VERSION=4.2.0-rc.1 PRODUCT_VERSION=4.2.0-rc.1 VERSION=4.2.0-rc.1 \
-    gmake dist PROJECT_VERSION=4.2.0-rc.1 PRODUCT_VERSION=4.2.0-rc.1 \
-    VERSION=4.2.0-rc.1 DIST_AS_EZS=true
-```
-
-The EZ file is created in the `plugins` directory.
-
-## Creating a Release
-
-1. Update `broker_version_requirements` in `helpers.bzl` & `Makefile` (Optional)
-1. Update the plugin version in `MODULE.bazel`
-1. Push a tag (i.e. `v4.0.0`) with the matching version
-1. Allow the Release workflow to run and create a draft release
-1. Review and publish the release
 
 ## LICENSE
 
