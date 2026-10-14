@@ -53,6 +53,7 @@
 
 -define(TABLE_NAME, append_to_atom(?MODULE, node())).
 -define(INDEX_TABLE_NAME, append_to_atom(?TABLE_NAME, "_index")).
+-define(TABLE_WAIT_TIMEOUT, 30000).
 
 -record(state, {timer,
                 stats_state}).
@@ -86,13 +87,7 @@ delay_message(Exchange, Message, Delay) ->
                     infinity).
 
 setup_mnesia() ->
-    case rabbit_khepri:is_enabled() of
-        true ->
-            ensure_mnesia_running();
-        false ->
-            %% Mnesia should already be running
-            ok
-    end,
+    ok = ensure_mnesia_running(),
     _ = mnesia:create_table(?TABLE_NAME, [{record_name, delay_entry},
                                           {attributes,
                                            record_info(fields, delay_entry)},
@@ -103,25 +98,33 @@ setup_mnesia() ->
                                                  record_info(fields, delay_index)},
                                                 {type, ordered_set},
                                                 {disc_copies, [node()]}]),
-    rabbit_table:wait([?TABLE_NAME, ?INDEX_TABLE_NAME]).
+    case mnesia:wait_for_tables([?TABLE_NAME, ?INDEX_TABLE_NAME], ?TABLE_WAIT_TIMEOUT) of
+        ok -> ok;
+        Error -> exit({?MODULE, cannot_load_tables, Error})
+    end.
 
+%% RabbitMQ 4.3 no longer runs Mnesia, so the plugin starts it as a
+%% node-local store. rabbit_env still points the mnesia `dir' at the node
+%% data directory, so tables written by the plugin on 4.2 load unchanged.
 ensure_mnesia_running() ->
-    case rabbit_mnesia:is_running() of
-        false ->
-            ensure_mnesia_disc_schema(),
-            rabbit_mnesia:start_mnesia(_CheckConsistency = false);
-        true ->
+    case mnesia:system_info(is_running) of
+        yes ->
+            ok;
+        _ ->
+            ok = ensure_mnesia_disc_schema(),
+            {ok, _} = application:ensure_all_started(mnesia),
             ok
     end.
 
 ensure_mnesia_disc_schema() ->
     case mnesia:system_info(use_dir) of
         true ->
-            %% There is a disc schema already
             ok;
         false ->
-            rabbit_misc:ensure_ok(mnesia:create_schema([node()]),
-                                  {?MODULE, cannot_create_mnesia_schema})
+            case mnesia:create_schema([node()]) of
+                ok -> ok;
+                {error, Reason} -> exit({?MODULE, cannot_create_mnesia_schema, Reason})
+            end
     end.
 
 disable_plugin() ->
