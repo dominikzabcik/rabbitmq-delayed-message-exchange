@@ -1,26 +1,24 @@
 name: Test
 on:
   push:
-    branches:
-      - main
-      - v3.13.x
-      - v3.12.x
+    branches: [v4.3.x]
   pull_request:
 jobs:
-  test:
+  smoke:
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
-        bazel_otp_name:
-          - "26_2"
-    uses: rabbitmq/rabbitmq-lvc-exchange/.github/workflows/bazel-test.yml@main
-    with:
-      bazel_otp_name: ${{ matrix.bazel_otp_name }}
-  summary:
-    needs:
-    - test
-    runs-on: ubuntu-latest
+        rabbitmq: [v4.3.6]
     steps:
-    - name: SUMMARY
-      run: |
-        echo "SUCCESS"
+      - uses: actions/checkout@v4
+      - name: Build against RabbitMQ ${{ matrix.rabbitmq }}
+        run: scripts/build.sh ${{ matrix.rabbitmq }}
+      - name: Smoke test
+        run: RABBITMQ_IMAGE="rabbitmq:${MATRIX_RABBITMQ#v}-management" scripts/smoke-test.sh
+        env:
+          MATRIX_RABBITMQ: ${{ matrix.rabbitmq }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rabbitmq_delayed_message_exchange-${{ matrix.rabbitmq }}
+          path: dist/
